@@ -15,6 +15,7 @@ from uuid import uuid4
 
 import audio_analysis
 import audio_mixer
+import saved_journeys
 
 history = [
     {
@@ -459,15 +460,42 @@ class GatewayError(ValueError):
         self.status, self.code = status, code
 
 
-def broker(path, body=None, profile=None):
+LOCAL_START = "uv run --locked --env-file .env python app.py"
+
+
+def gateway_settings():
+    """Return (development, url, token) or explain exactly which setting is missing.
+
+    Locally, .env supplies WORKSHOP_DEVELOPMENT_URL and WORKSHOP_DEVELOPMENT_TOKEN
+    when the server is started with --env-file. When hosted, the platform
+    supplies WORKSHOP_BROKER_URL, WORKSHOP_RUN_TOKEN and WORKSHOP_RUN_ID.
+    """
     development = bool(os.environ.get("WORKSHOP_DEVELOPMENT_URL"))
-    url = urlsplit(
-        os.environ[
-            "WORKSHOP_DEVELOPMENT_URL"
-            if development
-            else "WORKSHOP_BROKER_URL"
-        ]
-    )
+    if development:
+        if not os.environ.get("WORKSHOP_DEVELOPMENT_TOKEN"):
+            raise ValueError(
+                "WORKSHOP_DEVELOPMENT_TOKEN is empty. Paste your local development "
+                f"token into .env and restart the server with: {LOCAL_START}"
+            )
+        return True, os.environ["WORKSHOP_DEVELOPMENT_URL"], os.environ["WORKSHOP_DEVELOPMENT_TOKEN"]
+
+    missing = [
+        name
+        for name in ("WORKSHOP_BROKER_URL", "WORKSHOP_RUN_TOKEN", "WORKSHOP_RUN_ID")
+        if not os.environ.get(name)
+    ]
+    if missing:
+        raise ValueError(
+            "No workshop gateway is configured: WORKSHOP_DEVELOPMENT_URL is not set "
+            f"and the hosted settings ({', '.join(missing)}) are missing. To run "
+            f"locally, start the server with: {LOCAL_START}"
+        )
+    return False, os.environ["WORKSHOP_BROKER_URL"], os.environ["WORKSHOP_RUN_TOKEN"]
+
+
+def broker(path, body=None, profile=None):
+    development, gateway_url, token = gateway_settings()
+    url = urlsplit(gateway_url)
 
     if url.scheme not in ("http", "https") or not url.hostname:
         raise ValueError("Use a valid HTTP or HTTPS workshop gateway.")
@@ -476,12 +504,7 @@ def broker(path, body=None, profile=None):
     connection = connection_type(url.hostname, url.port, timeout=90)
 
     headers = {
-        "Authorization": "Bearer "
-        + os.environ[
-            "WORKSHOP_DEVELOPMENT_TOKEN"
-            if development
-            else "WORKSHOP_RUN_TOKEN"
-        ],
+        "Authorization": "Bearer " + token,
         "Content-Type": "application/json",
         "X-Workshop-Contract-Version": "workshop.app.v1",
     }
@@ -778,6 +801,21 @@ class Handler(BaseHTTPRequestHandler):
                 data = audio_analysis.with_reviews(file_path, audio_analysis.analysis(file_path))
             return self.reply(json.dumps(data).encode())
 
+        if path == "/saved":
+            return self.reply(json.dumps({"journeys": saved_journeys.list_saved()}, ensure_ascii=False).encode())
+
+        saved = re.fullmatch(r"/saved/([^/]+?)(/waveform)?", path)
+        if saved:
+            file_path = saved_journeys.path_for(saved[1])
+            if not file_path:
+                return self.send_error(404)
+            if not saved[2]:
+                return self.send_file(file_path, "audio/wav")
+            try:
+                return self.reply(json.dumps(audio_analysis.waveform(file_path)).encode())
+            except (OSError, ValueError, EOFError, wave.Error) as exception:
+                return self.reply(json.dumps({"error": str(exception)}).encode(), status=422)
+
         journey_wave = re.fullmatch(r"/journeys/([^/]+)/waveform", path)
         if journey_wave and audio_mixer.OUTPUT_PATTERN.fullmatch(journey_wave[1]):
             file_path = audio_mixer.OUTPUT_DIR / journey_wave[1]
@@ -849,9 +887,58 @@ class Handler(BaseHTTPRequestHandler):
         result = audio_analysis.with_reviews(path, audio_analysis.analysis(path))
         self.reply(json.dumps(result).encode())
 
+    def save_journey(self):
+        """Save a journey the server itself recorded as created; metadata comes from that record."""
+        try:
+            size = int(self.headers.get("Content-Length", 0))
+            if not 0 < size <= 2000:
+                raise ValueError("Invalid request.")
+            payload = json.loads(self.rfile.read(size))
+            name = payload["journey"]
+            if not isinstance(name, str) or not audio_mixer.OUTPUT_PATTERN.fullmatch(name):
+                raise ValueError("Unknown journey.")
+            record = next(
+                (
+                    result
+                    for result in (json.loads(text) for role, text, *_ in chat if role == "tool")
+                    if result.get("status") == "success" and result.get("filename") == name
+                ),
+                None,
+            )
+            if not record:
+                raise ValueError("Only journeys created in this session can be saved.")
+            entry = saved_journeys.save(
+                audio_mixer.OUTPUT_DIR / name,
+                payload.get("title") or "",
+                record.get("locations", []),
+                record.get("audio_files", []),
+                "Generated by create_journey and saved from the result panel.",
+            )
+        except (ValueError, KeyError, TypeError) as exception:
+            return self.reply(json.dumps({"error": str(exception)}).encode(), status=400)
+        except OSError:
+            return self.reply(b'{"error":"Saved journeys cannot be stored on this server."}', status=503)
+        self.reply(json.dumps(entry, ensure_ascii=False).encode())
+
+    def do_DELETE(self):
+        deleted = re.fullmatch(r"/saved/([^/]+)", urlsplit(self.path).path)
+        if not deleted:
+            return self.send_error(404)
+        try:
+            entry = saved_journeys.delete(deleted[1])
+        except LookupError as exception:
+            return self.reply(json.dumps({"error": str(exception)}).encode(), status=404)
+        except ValueError as exception:
+            return self.reply(json.dumps({"error": str(exception)}).encode(), status=400)
+        except OSError:
+            return self.reply(b'{"error":"The saved journey could not be deleted on this server."}', status=503)
+        self.reply(json.dumps({"deleted": entry.get("id"), "title": entry.get("title")}, ensure_ascii=False).encode())
+
     def do_POST(self):
         global error, run_status
 
+        if self.path == "/saved":
+            return self.save_journey()
         review = re.fullmatch(r"/recordings/([a-z0-9-]+)/review", self.path)
         if review:
             return self.save_review(review[1])
@@ -912,6 +999,11 @@ def warm_analysis_cache():
 
 
 if __name__ == "__main__":
+    # Report the gateway mode at startup so a missing --env-file shows up before the first chat.
+    try:
+        print(f"[sonic-journey] Workshop gateway: {'development' if gateway_settings()[0] else 'hosted'}.", file=sys.stderr)
+    except ValueError as exception:
+        print(f"[sonic-journey] Warning: {exception}", file=sys.stderr)
     Thread(target=warm_analysis_cache, daemon=True).start()
     ThreadingHTTPServer(
         ("0.0.0.0", int(os.environ.get("PORT", "8080"))),

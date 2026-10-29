@@ -22,6 +22,7 @@ from zipfile import ZipFile
 import app
 import audio_analysis
 import audio_mixer
+import saved_journeys
 
 ROOT = Path(__file__).resolve().parent
 NY_PROMPT = (
@@ -375,6 +376,25 @@ class MixerTests(unittest.TestCase):
             "seconds": audio_mixer.CROSSFADE_SECONDS,
         }])
 
+    def test_result_has_consistent_timeline_facts_for_the_panel(self):
+        """The result panel draws scenes from these values, so they must agree."""
+        result = audio_mixer.create_journey(
+            ["NY-a approaching.wav", "NY-b leaving.wav", "short.wav"], 30, self.audio, self.output
+        )
+        duration, sources = result["duration_seconds"], result["sources"]
+        self.assertEqual(sources[0]["starts_at_seconds"], 0)
+        for source in sources:
+            self.assertGreater(source["seconds_used"], 0)
+            self.assertLessEqual(source["starts_at_seconds"] + source["seconds_used"], duration + 0.05)
+        self.assertEqual(len(result["transitions"]), len(sources) - 1)
+        for transition, previous, following in zip(result["transitions"], sources, sources[1:]):
+            self.assertEqual((transition["from"], transition["to"]), (previous["filename"], following["filename"]))
+            self.assertEqual(transition["at_seconds"], following["starts_at_seconds"])
+            # The overlap between neighbouring scenes is the reported crossfade.
+            overlap = previous["starts_at_seconds"] + previous["seconds_used"] - following["starts_at_seconds"]
+            self.assertAlmostEqual(overlap, transition["seconds"], delta=0.05)
+        self.assertEqual((result["fade_in_seconds"], result["fade_out_seconds"]), (1.0, 1.0))
+
     def test_requested_offsets_and_transition_lengths_are_used(self):
         result = audio_mixer.create_journey(
             ["NY-a approaching.wav", "NY-b leaving.wav"], 20, self.audio, self.output,
@@ -641,6 +661,32 @@ class GatewayFailureTests(unittest.TestCase):
         self.assertIn("Agent run failed: The development capability", log)
         self.assertIn("Traceback", log)
 
+    def test_missing_gateway_configuration_is_explained(self):
+        # Started without --env-file: no development URL and no hosted settings.
+        log = io.StringIO()
+        with patch.dict("os.environ", {}, clear=True), redirect_stderr(log):
+            app.busy.acquire()
+            app.run("hi")
+        self.assertFalse(app.busy.locked())
+        self.assertEqual(app.run_status, "failed")
+        self.assertNotIn("KeyError", app.error)
+        self.assertIn("WORKSHOP_DEVELOPMENT_URL is not set", app.error)
+        self.assertIn("WORKSHOP_BROKER_URL", app.error)
+        self.assertIn("uv run --locked --env-file .env python app.py", app.error)
+
+    def test_gateway_settings_for_each_environment(self):
+        with patch.dict("os.environ", {"WORKSHOP_DEVELOPMENT_URL": "https://dev.example/api", "WORKSHOP_DEVELOPMENT_TOKEN": self.TOKEN}, clear=True):
+            self.assertEqual(app.gateway_settings(), (True, "https://dev.example/api", self.TOKEN))
+        with patch.dict("os.environ", {"WORKSHOP_DEVELOPMENT_URL": "https://dev.example/api"}, clear=True):
+            with self.assertRaisesRegex(ValueError, "WORKSHOP_DEVELOPMENT_TOKEN is empty"):
+                app.gateway_settings()
+        hosted = {"WORKSHOP_BROKER_URL": "https://broker.example", "WORKSHOP_RUN_TOKEN": self.TOKEN, "WORKSHOP_RUN_ID": "run-1"}
+        with patch.dict("os.environ", hosted, clear=True):
+            self.assertEqual(app.gateway_settings(), (False, "https://broker.example", self.TOKEN))
+        with patch.dict("os.environ", {"WORKSHOP_BROKER_URL": "https://broker.example"}, clear=True):
+            with self.assertRaisesRegex(ValueError, "WORKSHOP_RUN_TOKEN, WORKSHOP_RUN_ID"):
+                app.gateway_settings()
+
     def test_non_json_gateway_reply_is_reported(self):
         connection, _ = fake_gateway(502, b"<html>Bad gateway</html>")
         self.run_hi(connection)
@@ -665,6 +711,155 @@ class GatewayFailureTests(unittest.TestCase):
         self.assertIn("Unexpected server error (RuntimeError)", app.error)
         self.assertIn("RuntimeError: boom with [redacted]", log.getvalue())
         self.assertNotIn(self.TOKEN, log.getvalue())
+
+
+class SavedJourneyTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+        self.saved = self.root / "saved"
+        patcher = patch.object(saved_journeys, "SAVED_DIR", self.saved)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self.directory.cleanup)
+        self.source = self.root / ("journey-" + "b" * 32 + ".wav")
+        write_tone(self.source, 3, rate=24_000, channels=2)
+
+    def test_listing_reports_available_and_missing_files(self):
+        entry = saved_journeys.save(self.source, "Calm Test", ["London"], ["a.wav"], "test fixture")
+        manifest = json.loads((self.saved / "journeys.json").read_text())
+        manifest["journeys"].append({"id": "gone", "title": "Gone", "file": "gone.wav", "cities": ["Boston"]})
+        (self.saved / "journeys.json").write_text(json.dumps(manifest))
+
+        listing = {item["title"]: item for item in saved_journeys.list_saved()}
+        self.assertEqual(listing["Calm Test"]["status"], "available")
+        self.assertEqual(listing["Calm Test"]["duration_seconds"], 3.0)
+        self.assertEqual(listing["Calm Test"]["url"], f"/saved/{entry['file']}")
+        self.assertEqual(listing["Gone"]["status"], "missing")
+        self.assertNotIn("url", listing["Gone"])
+        self.assertIsNone(saved_journeys.path_for("gone.wav"))
+
+    def test_saving_copies_exactly_and_never_overwrites(self):
+        self.saved.mkdir()
+        existing = self.saved / "my-trip.wav"
+        existing.write_bytes(b"an earlier saved file")
+        entry = saved_journeys.save(self.source, "My trip", ["London"], ["a.wav"], "test fixture")
+        self.assertEqual(entry["file"], "my-trip-2.wav")
+        self.assertEqual(existing.read_bytes(), b"an earlier saved file")
+        self.assertEqual((self.saved / "my-trip-2.wav").read_bytes(), self.source.read_bytes())
+        self.assertEqual(entry["sha256"], saved_journeys.sha256(self.source))
+        self.assertTrue(self.source.is_file())  # The original stays where it was.
+        # Saving the same audio again returns the existing entry instead of a duplicate.
+        self.assertEqual(saved_journeys.save(self.source, "Another name", [], [], "x")["file"], "my-trip-2.wav")
+        self.assertEqual(len(saved_journeys.list_saved()), 1)
+
+    def test_invalid_saves_are_rejected(self):
+        with self.assertRaisesRegex(ValueError, "no longer exists"):
+            saved_journeys.save(self.root / "missing.wav", "Title", [], [], "x")
+        with self.assertRaisesRegex(ValueError, "title"):
+            saved_journeys.save(self.source, " ", [], [], "x")
+        self.assertIsNone(saved_journeys.path_for("../app.py"))
+        self.assertIsNone(saved_journeys.path_for("not-in-manifest.wav"))
+
+    def second_source(self):
+        other = self.root / ("journey-" + "c" * 32 + ".wav")
+        write_tone(other, 2, rate=24_000, channels=2, frequency=440)
+        return other
+
+    def test_delete_removes_entry_and_file_and_persists(self):
+        first = saved_journeys.save(self.source, "First", ["London"], [], "test fixture")
+        second = saved_journeys.save(self.second_source(), "Second", ["Boston"], [], "test fixture")
+        deleted = saved_journeys.delete(first["id"])
+
+        self.assertEqual(deleted["title"], "First")
+        self.assertFalse((self.saved / first["file"]).exists())
+        self.assertTrue((self.saved / second["file"]).is_file())
+        self.assertTrue(self.source.is_file())  # The generated original is never touched.
+        # The manifest on disk reflects the deletion, as after a page refresh or restart.
+        on_disk = json.loads((self.saved / "journeys.json").read_text())["journeys"]
+        self.assertEqual([entry["id"] for entry in on_disk], [second["id"]])
+        self.assertEqual([item["title"] for item in saved_journeys.list_saved()], ["Second"])
+        with self.assertRaises(LookupError):
+            saved_journeys.delete(first["id"])
+
+    def test_delete_works_when_the_wav_is_already_missing(self):
+        entry = saved_journeys.save(self.source, "Gone soon", [], [], "test fixture")
+        (self.saved / entry["file"]).unlink()
+        self.assertEqual(saved_journeys.list_saved()[0]["status"], "missing")
+        saved_journeys.delete(entry["id"])
+        self.assertEqual(saved_journeys.list_saved(), [])
+
+    def test_delete_rejects_invalid_ids_and_paths_outside_saved(self):
+        saved_journeys.save(self.source, "Keep me", [], [], "test fixture")
+        outside = self.root / "outside.wav"
+        outside.write_bytes(b"must survive")
+        manifest = json.loads((self.saved / "journeys.json").read_text())
+        manifest["journeys"].append({"id": "escape", "title": "Escape", "file": "../outside.wav"})
+        (self.saved / "journeys.json").write_text(json.dumps(manifest))
+
+        for bad in ("../outside", "", "Has Spaces", "a/b", None):
+            with self.subTest(journey_id=bad), self.assertRaises(ValueError):
+                saved_journeys.delete(bad)
+        with self.assertRaisesRegex(ValueError, "outside saved"):
+            saved_journeys.delete("escape")
+        self.assertEqual(outside.read_bytes(), b"must survive")
+        self.assertEqual(len(json.loads((self.saved / "journeys.json").read_text())["journeys"]), 2)
+        with self.assertRaises(LookupError):
+            saved_journeys.delete("no-such-journey")
+
+    def test_delete_keeps_a_file_another_entry_still_uses(self):
+        entry = saved_journeys.save(self.source, "Shared", [], [], "test fixture")
+        manifest = json.loads((self.saved / "journeys.json").read_text())
+        manifest["journeys"].append({**entry, "id": "shared-copy", "title": "Shared copy"})
+        (self.saved / "journeys.json").write_text(json.dumps(manifest))
+        saved_journeys.delete(entry["id"])
+        self.assertTrue((self.saved / entry["file"]).is_file())
+        self.assertEqual([item["id"] for item in saved_journeys.list_saved()], ["shared-copy"])
+
+    def test_routes_list_serve_and_save_only_recorded_journeys(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        def request(method, path, body=None):
+            connection = HTTPConnection("127.0.0.1", server.server_port)
+            connection.request(method, path, body=json.dumps(body) if body else None, headers={"Content-Type": "application/json"})
+            response = connection.getresponse()
+            result = response.status, response.read()
+            connection.close()
+            return result
+
+        with patch.object(audio_mixer, "OUTPUT_DIR", self.root), patch.object(app, "chat", []):
+            # Not created in this session: refused, nothing copied.
+            status, _ = request("POST", "/saved", {"journey": self.source.name, "title": "Nope"})
+            self.assertEqual(status, 400)
+            self.assertFalse(self.saved.exists())
+            app.chat.append(["tool", json.dumps({"tool": "create_journey", "status": "success", "filename": self.source.name,
+                                                  "locations": ["London"], "audio_files": ["a.wav"]})])
+            status, body = request("POST", "/saved", {"journey": self.source.name, "title": "From the panel"})
+            self.assertEqual(status, 200)
+            saved_file = json.loads(body)["file"]
+            self.assertEqual(request("POST", "/saved", {"journey": "../app.py", "title": "x"})[0], 400)
+
+        status, body = request("GET", "/saved")
+        journeys = json.loads(body)["journeys"]
+        self.assertEqual((status, [j["title"] for j in journeys], journeys[0]["cities"]), (200, ["From the panel"], ["London"]))
+        status, body = request("GET", f"/saved/{saved_file}")
+        self.assertEqual((status, body), (200, self.source.read_bytes()))
+        self.assertEqual(request("GET", f"/saved/{saved_file}/waveform")[0], 200)
+        self.assertEqual(request("GET", "/saved/unknown.wav")[0], 404)
+
+        # Delete through the route: entry and file go, other files stay.
+        journey_id = journeys[0]["id"]
+        self.assertEqual(request("DELETE", "/saved/..%2Fapp.py")[0], 400)
+        self.assertEqual(request("DELETE", "/saved/no-such-journey")[0], 404)
+        status, body = request("DELETE", f"/saved/{journey_id}")
+        self.assertEqual((status, json.loads(body)["deleted"]), (200, journey_id))
+        self.assertFalse((self.saved / saved_file).exists())
+        self.assertEqual(json.loads(request("GET", "/saved")[1])["journeys"], [])
+        self.assertEqual(request("GET", f"/saved/{saved_file}")[0], 404)
+        self.assertTrue((ROOT / "app.py").is_file())
 
 
 class ServerTests(unittest.TestCase):
@@ -795,6 +990,24 @@ class PageTests(unittest.TestCase):
         self.assertTrue(captured[0].startswith("[Creation mode: Explore a City. City: Boston."))
         self.assertTrue(captured[0].endswith("\nSomething calm"))
         self.assertEqual(app.chat[-1], ["you", "Something calm", {"mode": {"type": "city", "city": "Boston"}}])
+
+    def test_home_button_returns_to_the_existing_home_view_without_requests(self):
+        html = (ROOT / "index.html").read_text()
+        header = html[html.index('<header class="topbar">'):html.index("</header>")]
+        button = re.search(r'<button[^>]*id="home-button"[^>]*>(.*?)</button>', header, re.S)
+        self.assertIsNotNone(button, "The Home button must live in the header")
+        self.assertIn("<svg", button[1])
+        self.assertEqual(re.sub(r"<[^>]+>", "", button[1]).strip(), "Home")
+        self.assertEqual(html.count('id="hero"'), 1, "Home reuses the one existing landing view")
+
+        script = (ROOT / "chat.js").read_text()
+        self.assertIn('$("#home-button").addEventListener("click", returnToGlobe);', script)
+        body = script[script.index("function returnToGlobe() {"):script.index("\n}\n", script.index("function returnToGlobe() {"))]
+        # Returning Home only changes the view: no request, message, generation or data reset.
+        for forbidden in ("fetch(", "sendMessage", "composeInChat", "create_journey", "lastState =", "savedJourneys =", "localStorage"):
+            self.assertNotIn(forbidden, body)
+        for expected in ('app.dataset.mode = "landing"', "closeOverlay()", "audio.pause()", "preview.pause()", "savedAudio.pause()"):
+            self.assertIn(expected, body)
 
     def test_state_reports_run_outcome(self):
         with patch.object(app, "run_status", "failed"), patch.object(app, "error", "Gateway said no"):

@@ -164,12 +164,6 @@ function pairInvocations(entries) {
   return invocations;
 }
 
-function journeyResults(entries) {
-  return entries
-    .filter((entry) => entry.role === "tool" && entry.data && JOURNEY_TOOLS.has(entry.data.tool))
-    .map((entry) => entry.data);
-}
-
 function recordingByFile(filename) {
   return recordings?.recordings.find((item) => item.filename === filename);
 }
@@ -439,41 +433,203 @@ const journeyWave = new Waveform({
 });
 $("#journey-wave").append(journeyWave.el);
 
+let viewPrevious = false;
+let attemptCount = 0;
+
 function selectJourney(url) {
   selectedUrl = url;
+  viewPrevious = true;
   renderJourney();
   renderChatIfNeeded(true);
 }
 
+// Journey tool calls in order, each with its arguments, its result (if any) and
+// whether it belongs to the latest request. Built only from the server's chat log.
+function journeyAttempts(entries) {
+  const lastUser = entries.map((entry) => entry.role).lastIndexOf("you");
+  const attempts = [];
+  entries.forEach((entry, index) => {
+    if (!entry.data || !JOURNEY_TOOLS.has(entry.data.tool)) return;
+    if (entry.role === "call") {
+      attempts.push({ tool: entry.data.tool, arguments: entry.data.arguments, result: null, latestTurn: index > lastUser });
+    } else {
+      const open = attempts.find((item) => item.tool === entry.data.tool && !item.result);
+      if (open) open.result = entry.data;
+      else attempts.push({ tool: entry.data.tool, arguments: null, result: entry.data, latestTurn: index > lastUser });
+    }
+  });
+  return attempts;
+}
+
+// Places in playback order, so a London-to-Beijing journey reads that way.
+function journeyTitle(journey) {
+  const places = [...new Set((journey.sources || []).map((source) => source.location).filter(Boolean))];
+  return places.length ? `${places.join(" → ")} journey` : "Generated journey";
+}
+
+function setBadge(text, tone) {
+  const badge = $("#result-badge");
+  badge.hidden = !text;
+  badge.textContent = text || "";
+  badge.dataset.tone = tone || "";
+}
+
+// What the agent asked create_journey to do. It is a plan until the server confirms audio.
+function renderPlan(attempt, note) {
+  $("#plan-note").textContent = note;
+  const files = attempt?.arguments?.audio_files || [];
+  $("#plan-list").replaceChildren(
+    ...files.map((name) => {
+      const known = recordingByFile(name);
+      const item = el("li", known ? "" : "unknown", known ? known.title : name);
+      item.append(el("small", "", known ? `${known.location} · ${name}` : "not in the recording library"));
+      return item;
+    })
+  );
+  const args = attempt?.arguments || {};
+  const settings = [];
+  if (args.duration_seconds) settings.push(`${args.duration_seconds} s requested`);
+  if (args.crossfade_seconds !== undefined) settings.push(`${args.crossfade_seconds} s crossfades`);
+  if (args.fade_seconds !== undefined) settings.push(`${args.fade_seconds} s fades`);
+  for (const [name, offset] of Object.entries(args.start_offsets || {})) {
+    settings.push(`${recordingByFile(name)?.title || name} from ${formatTime(offset)}`);
+  }
+  if (!files.length && attempt?.tool === "get_current_journey") settings.push("Retrieving the existing journey");
+  $("#plan-settings").textContent = settings.join(" · ");
+}
+
+function tickStep(duration) {
+  return [5, 10, 15, 20, 30, 60].find((step) => duration / step <= 6) || 60;
+}
+
+// Scenes drawn from backend-reported start times and lengths; overlaps are the crossfades.
+function renderScenes(journey) {
+  const box = $("#scene-timeline");
+  const duration = Number(journey.duration_seconds) || 0;
+  const sources = journey.sources || [];
+  box.replaceChildren();
+  box.hidden = !duration || !sources.length;
+  if (box.hidden) return;
+  const pct = (seconds) => `${Math.min(100, Math.max(0, (seconds / duration) * 100))}%`;
+
+  const track = el("div", "scene-track");
+  sources.forEach((source, index) => {
+    const start = source.starts_at_seconds;
+    const end = Math.min(duration, start + source.seconds_used);
+    const title = recordingByFile(source.filename)?.title || source.filename;
+    const scene = button("scene", "", () => {
+      audio.currentTime = start;
+      updatePlayer();
+    });
+    scene.dataset.lane = String(index % 2);
+    scene.style.left = pct(start);
+    scene.style.width = pct(end - start);
+    scene.style.setProperty("--scene-color", SOURCE_COLORS[index % SOURCE_COLORS.length]);
+    scene.setAttribute("aria-label", `Scene ${index + 1}: ${title}, ${formatTime(start)} to ${formatTime(end)}. Jump here.`);
+    scene.title = `${index + 1}. ${title}\n${formatTime(start)}–${formatTime(end)} · ${source.filename}`;
+    scene.append(el("span", "scene-name", `${index + 1} ${title}`), el("span", "scene-time", `${formatTime(start)}–${formatTime(end)}`));
+    track.append(scene);
+  });
+  for (const transition of journey.transitions || []) {
+    const zone = el("span", "scene-xfade");
+    zone.style.left = pct(transition.at_seconds);
+    zone.style.width = pct(transition.seconds);
+    zone.title = `${transition.seconds} s ${transition.type} at ${formatTime(transition.at_seconds)}`;
+    track.append(zone);
+  }
+  if (journey.looped && sources.length) {
+    const last = sources.at(-1);
+    const passEnd = last.starts_at_seconds + last.seconds_used;
+    if (passEnd < duration) {
+      const repeat = el("span", "scene-repeat", "sequence repeats");
+      repeat.style.left = pct(passEnd);
+      repeat.style.width = pct(duration - passEnd);
+      track.append(repeat);
+    }
+  }
+  if (journey.fade_in_seconds) {
+    const fadeIn = el("span", "scene-fade in");
+    fadeIn.style.width = pct(journey.fade_in_seconds);
+    track.append(fadeIn);
+  }
+  if (journey.fade_out_seconds) {
+    const fadeOut = el("span", "scene-fade out");
+    fadeOut.style.width = pct(journey.fade_out_seconds);
+    track.append(fadeOut);
+  }
+  track.append(el("span", "scene-playhead"));
+
+  const ruler = el("div", "scene-ruler");
+  const step = tickStep(duration);
+  for (let at = 0; at <= duration + 0.01; at += step) {
+    const tick = el("span", at > duration * 0.9 ? "end" : "", formatTime(at));
+    tick.style.left = pct(at);
+    ruler.append(tick);
+  }
+  box.append(track, ruler);
+}
+
 function renderJourney() {
   const entries = parseEntries(lastState.chat || []);
-  const results = journeyResults(entries);
-  journeys = results.filter((result) => result.status === "success" && result.url);
+  const attempts = journeyAttempts(entries);
+  journeys = attempts.filter((item) => item.result?.status === "success" && item.result.url).map((item) => item.result);
 
-  const newest = journeys.at(-1)?.url || "";
-  if (newest !== latestUrl) {
-    latestUrl = newest;
-    selectedUrl = newest;
+  // A new attempt always takes the panel back to the latest request.
+  if (attempts.length !== attemptCount) {
+    attemptCount = attempts.length;
+    viewPrevious = false;
   }
-  const journey = journeys.findLast((item) => item.url === selectedUrl);
-  const lastAttempt = results.at(-1);
-  const failure = lastAttempt && lastAttempt.status === "error" ? lastAttempt.error : "";
+  const latest = attempts.at(-1);
+  const latestSuccess = journeys.at(-1);
+  let state;
+  if (!latest) state = "empty";
+  else if (!latest.result) state = busy ? "generating" : "interrupted";
+  else if (latest.result.status !== "success") state = "failed";
+  else state = "verified";
 
-  const key = JSON.stringify([selectedUrl, failure, Boolean(journey), Boolean(recordings)]);
+  let journey = null;
+  if (state === "verified") journey = latest.result;
+  if (viewPrevious && latestSuccess) {
+    journey = journeys.findLast((item) => item.url === selectedUrl) || latestSuccess;
+  }
+  const earlier = Boolean(journey) && (journey !== latest?.result || !latest.latestTurn);
+
+  const key = JSON.stringify([state, attempts.length, journey?.url, earlier, Boolean(recordings), latest?.result?.error]);
   if (key === renderedJourneyKey) return;
   renderedJourneyKey = key;
+  if (journey) selectedUrl = journey.url;
+  latestUrl = latestSuccess?.url || "";
 
-  app.dataset.result = journey ? "ready" : "none";
+  app.dataset.result = journey ? "ready" : state === "empty" ? "none" : "plan";
+  requestAnimationFrame(fitPanels);
   const alert = $("#journey-alert");
-  alert.hidden = !failure;
-  alert.textContent = failure
-    ? `The latest journey request failed: ${failure}${journey ? " Showing your previous journey." : ""}`
-    : "";
+  alert.hidden = true;
 
-  $("#journey-empty").hidden = Boolean(journey);
+  // Planned, running or failed attempts show the plan, never a player.
+  const showPlan = !journey && ["generating", "failed", "interrupted"].includes(state);
+  $("#journey-empty").hidden = state !== "empty";
+  $("#journey-plan").hidden = !showPlan;
   $("#journey-body").hidden = !journey;
+  $("#show-previous").hidden = !(showPlan && latestSuccess);
   window.SonicGlobe?.highlightCities(journey ? journey.locations || [] : []);
 
+  if (state === "empty") {
+    setBadge("", "");
+    $("#journey-title").textContent = "No journey yet";
+  } else if (showPlan) {
+    const files = latest.arguments?.audio_files?.length || 0;
+    $("#journey-title").textContent = files ? `Planned journey · ${plural(files, "recording")}` : "Journey request";
+    if (state === "generating") {
+      setBadge("Generating…", "busy");
+      renderPlan(latest, "The agent called create_journey with this plan. The server is mixing and verifying the audio; nothing can be played yet.");
+    } else {
+      setBadge("Not generated", "error");
+      const reason = state === "failed" ? latest.result.error : lastState.error || "The request stopped before the tool finished.";
+      renderPlan(latest, `This plan did not produce audio. The server reported: ${reason}`);
+    }
+  }
+  displayedJourney = journey;
+  renderSaveControl();
   if (!journey) {
     $("#journey-meta").textContent = "";
     audio.pause();
@@ -483,32 +639,27 @@ function renderJourney() {
     return;
   }
 
+  setBadge(earlier ? "Verified · earlier request" : "Generated · verified", earlier ? "muted" : "ok");
+  if (earlier && state !== "verified" && latest) {
+    alert.hidden = false;
+    alert.textContent = "The latest request did not produce new audio. This is the previous verified journey.";
+  }
   const sources = journey.sources || [];
-  $("#journey-meta").textContent =
-    `${Number(journey.duration_seconds).toFixed(1)} s · ${plural(sources.length, "source")} · ${(journey.locations || []).join(", ")}`;
-
-  // The timeline shows real segment positions; looped journeys repeat, so it is omitted.
-  const timeline = $("#timeline");
-  timeline.replaceChildren();
-  timeline.hidden = journey.looped || !sources.length;
-  sources.forEach((source, index) => {
-    const end = sources[index + 1]?.starts_at_seconds ?? journey.duration_seconds;
-    const segment = el("span");
-    segment.style.flex = `${Math.max(end - source.starts_at_seconds, 0.1)}`;
-    segment.style.background = SOURCE_COLORS[index % SOURCE_COLORS.length];
-    segment.title = source.filename;
-    timeline.append(segment);
-  });
+  $("#journey-title").textContent = journeyTitle(journey);
+  const format = journey.sample_rate ? ` · ${journey.sample_rate / 1000} kHz ${journey.channels === 2 ? "stereo" : "mono"} WAV` : "";
+  $("#journey-meta").textContent = `${Number(journey.duration_seconds).toFixed(1)} s · ${plural(sources.length, "recording")}${format}`;
+  renderScenes(journey);
 
   $("#source-list").replaceChildren(
     ...sources.map((source, index) => {
       const item = el("li");
-      const swatch = el("span", "swatch");
+      const swatch = el("span", "swatch", String(index + 1));
       swatch.style.background = SOURCE_COLORS[index % SOURCE_COLORS.length];
       const title = recordingByFile(source.filename)?.title;
       const name = el("span", "source-name", title || source.filename);
       name.append(el("small", "", [source.location, source.filename].join(" · ")));
-      const time = el("span", "source-time", `${formatTime(source.starts_at_seconds)} → ${source.seconds_used} s`);
+      const end = source.starts_at_seconds + source.seconds_used;
+      const time = el("span", "source-time", `${formatTime(source.starts_at_seconds)}–${formatTime(end)} · ${source.seconds_used} s`);
       const chosen = source.offset_chosen_by ? ` (${source.offset_chosen_by})` : "";
       time.append(el("small", "", `from ${formatTime(source.source_offset_seconds)} in source${chosen}`));
       item.append(swatch, name, time);
@@ -516,15 +667,17 @@ function renderJourney() {
     })
   );
 
-  // Only transitions the backend reports are described.
+  // Only transitions and fades the backend reports are described.
   const transitions = (journey.transitions || []).map((item) => {
     const from = recordingByFile(item.from)?.title || item.from;
     const to = recordingByFile(item.to)?.title || item.to;
     return el("li", "", `${formatTime(item.at_seconds)} · ${item.seconds} s ${item.type}: ${from} → ${to}`);
   });
-  if (journey.fade_in_seconds) {
-    transitions.push(el("li", "", `Fades in and out over ${journey.fade_in_seconds} s at the start and end`));
-  }
+  const fades = [];
+  if (journey.fade_in_seconds) fades.push(`fade-in ${journey.fade_in_seconds} s`);
+  if (journey.fade_out_seconds) fades.push(`fade-out ${journey.fade_out_seconds} s`);
+  if (fades.length) transitions.push(el("li", "", `Edges: ${fades.join(", ")}`));
+  if (!transitions.length) transitions.push(el("li", "", "Transitions: not available (single recording, no fades reported)"));
   $("#transition-list").replaceChildren(...transitions);
   $("#journey-notes").replaceChildren(...(journey.notes || []).map((note) => el("li", "", note)));
 
@@ -547,6 +700,12 @@ function renderJourney() {
   }
 }
 
+$("#show-previous").addEventListener("click", () => {
+  viewPrevious = true;
+  selectedUrl = latestUrl;
+  renderJourney();
+});
+
 function updatePlayer() {
   const playing = !audio.paused && !audio.ended;
   playToggle.dataset.playing = String(playing);
@@ -555,6 +714,8 @@ function updatePlayer() {
   if (!seek.matches(":active")) seek.value = audio.currentTime || 0;
   journeyWave.setPosition(audio.currentTime || 0);
   $("#time-current").textContent = formatTime(audio.currentTime);
+  const duration = audio.duration || Number(seek.max) || 0;
+  $("#scene-timeline").style.setProperty("--playhead", duration ? `${Math.min(100, (audio.currentTime / duration) * 100)}%` : "0%");
 }
 
 playToggle.addEventListener("click", () => {
@@ -1116,6 +1277,7 @@ function enterWorkspace({ instant = false } = {}) {
     app.dataset.mode = "workspace";
     app.dataset.entered = instant ? "instant" : "animated";
     window.SonicGlobe?.setMode("workspace");
+    requestAnimationFrame(fitPanels);
   };
   try {
     sessionStorage.setItem("sonic-journey-started", "1");
@@ -1129,11 +1291,18 @@ function enterWorkspace({ instant = false } = {}) {
   return Promise.resolve();
 }
 
+// Home only changes the view: chat, the current result and saved journeys stay as they are,
+// and no request is sent. Players pause (keeping their position) because Home hides them.
 function returnToGlobe() {
+  closeOverlay();
+  audio.pause();
+  preview.pause();
+  savedAudio.pause();
   mode = "landing";
   const swap = () => {
     app.dataset.mode = "landing";
     window.SonicGlobe?.setMode("landing");
+    $("#start-button").focus();
   };
   try {
     sessionStorage.removeItem("sonic-journey-started");
@@ -1160,7 +1329,7 @@ $("#start-button").addEventListener("click", async () => {
   await enterWorkspace();
   input.focus();
 });
-$("#explore-button").addEventListener("click", returnToGlobe);
+$("#home-button").addEventListener("click", returnToGlobe);
 
 $("#hero-form").addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -1180,6 +1349,334 @@ try {
 } catch {
   // Without storage, the page starts on the landing screen.
 }
+
+// ---------- Saved journeys ----------
+
+const savedAudio = $("#saved-audio");
+const savedPanel = $("#saved-panel");
+let savedJourneys = [];
+let activeSaved = null;
+let displayedJourney = null;
+
+function resetSavedRow(row) {
+  if (!row) return;
+  row.el.dataset.playing = "false";
+  row.wave.setPosition(0);
+  row.time.textContent = `0:00 / ${formatTime(row.item.duration_seconds)}`;
+}
+
+// Saved journeys play existing WAV files only; nothing here calls the agent or the mixer.
+function playSaved(row, at = null) {
+  audio.pause();
+  preview.pause();
+  if (activeSaved !== row) {
+    resetSavedRow(activeSaved);
+    activeSaved = row;
+  }
+  if (!savedAudio.src.endsWith(row.item.url)) savedAudio.src = row.item.url;
+  const start = () => {
+    if (at !== null) savedAudio.currentTime = at;
+    savedAudio.play().catch(() => {
+      row.el.dataset.playing = "false";
+      row.time.textContent = "Could not play this file";
+    });
+  };
+  if (at !== null && savedAudio.readyState < 1) {
+    savedAudio.addEventListener("loadedmetadata", start, { once: true });
+    savedAudio.load();
+  } else {
+    start();
+  }
+}
+
+savedAudio.addEventListener("play", () => activeSaved && (activeSaved.el.dataset.playing = "true"));
+savedAudio.addEventListener("pause", () => activeSaved && (activeSaved.el.dataset.playing = "false"));
+savedAudio.addEventListener("ended", () => activeSaved && (activeSaved.el.dataset.playing = "false"));
+savedAudio.addEventListener("timeupdate", () => {
+  if (!activeSaved) return;
+  activeSaved.wave.setPosition(savedAudio.currentTime);
+  activeSaved.time.textContent = `${formatTime(savedAudio.currentTime)} / ${formatTime(activeSaved.item.duration_seconds)}`;
+});
+audio.addEventListener("play", () => savedAudio.pause());
+preview.addEventListener("play", () => savedAudio.pause());
+
+function savedRow(item) {
+  const row = { item };
+  row.el = el("li", "saved-item");
+  row.el.dataset.status = item.status;
+  const play = el("button", "card-play");
+  play.type = "button";
+  play.append(...playIcons());
+  play.setAttribute("aria-label", `Play or pause ${item.title}`);
+  play.disabled = item.status !== "available";
+  play.addEventListener("click", () => {
+    if (activeSaved === row && !savedAudio.paused) savedAudio.pause();
+    else playSaved(row);
+  });
+  const name = el("div", "saved-name");
+  name.append(el("strong", "", item.title));
+  const cities = (item.cities || []).join(", ") || "City not recorded";
+  name.append(el("span", "", item.status === "available" ? `${formatTime(item.duration_seconds)} · ${cities}` : cities));
+  name.title = [item.title, ...(item.sources || []), item.provenance].filter(Boolean).join("\n");
+  row.el.append(play, name);
+
+  if (item.status !== "available") {
+    row.el.append(el("p", "saved-missing", item.reason || "This saved file is unavailable."), deleteControls(row));
+    return row.el;
+  }
+  row.wave = new Waveform({
+    label: `Position in ${item.title}`,
+    height: 28,
+    onSeek: (seconds) => playSaved(row, seconds),
+  });
+  row.wave.setDuration(item.duration_seconds);
+  row.wave.load(`${item.url}/waveform`, `saved:${item.file}`);
+  row.time = el("span", "", `0:00 / ${formatTime(item.duration_seconds)}`);
+  const restart = el("button", "icon-button", "↺");
+  restart.type = "button";
+  restart.setAttribute("aria-label", `Replay ${item.title} from the beginning`);
+  restart.addEventListener("click", () => playSaved(row, 0));
+  const tail = el("div", "saved-tail");
+  tail.append(row.time, restart, deleteControls(row));
+  row.el.append(row.wave.el, tail);
+  return row.el;
+}
+
+function trashIcon() {
+  const node = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  node.setAttribute("viewBox", "0 0 24 24");
+  node.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", "M4 7h16M10 11v6M14 11v6M6 7l1 12h10l1-12M9 7V4h6v3");
+  node.append(path);
+  return node;
+}
+
+// Trash button with an inline confirmation, so one click never deletes anything.
+function deleteControls(row) {
+  const wrap = el("span", "saved-delete");
+  const trash = el("button", "icon-button trash");
+  trash.type = "button";
+  trash.setAttribute("aria-label", `Delete ${row.item.title}`);
+  trash.append(trashIcon());
+  const confirmBox = el("span", "delete-confirm");
+  confirmBox.hidden = true;
+  const yes = button("text-button danger", "Delete", () => deleteSaved(row, confirmBox));
+  const no = button("text-button muted", "Cancel", () => {
+    confirmBox.hidden = true;
+    trash.hidden = false;
+    trash.focus();
+  });
+  yes.setAttribute("aria-label", `Confirm deleting ${row.item.title}`);
+  confirmBox.append(el("span", "", "Delete?"), yes, no);
+  confirmBox.addEventListener("keydown", (event) => event.key === "Escape" && no.click());
+  trash.addEventListener("click", () => {
+    trash.hidden = true;
+    confirmBox.hidden = false;
+    yes.focus();
+  });
+  wrap.append(trash, confirmBox);
+  return wrap;
+}
+
+function updateSavedSummary() {
+  $("#saved-empty").hidden = savedJourneys.length > 0;
+  const available = savedJourneys.filter((item) => item.status === "available").length;
+  $("#saved-count").textContent = savedJourneys.length
+    ? `${available} of ${plural(savedJourneys.length, "journey")} available`
+    : "";
+}
+
+async function deleteSaved(row, confirmBox) {
+  // Release the file first if this journey is the one playing.
+  if (activeSaved === row) {
+    savedAudio.pause();
+    savedAudio.removeAttribute("src");
+    savedAudio.load();
+    activeSaved = null;
+  }
+  confirmBox.replaceChildren(el("span", "", "Deleting…"));
+  try {
+    const response = await fetch(`/saved/${encodeURIComponent(row.item.id)}`, { method: "DELETE" });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    // Update in place so another saved journey that is playing keeps playing.
+    savedJourneys = savedJourneys.filter((item) => item.id !== row.item.id);
+    row.el.remove();
+    updateSavedSummary();
+    renderSaveControl();
+    requestAnimationFrame(fitPanels);
+  } catch (error) {
+    confirmBox.replaceChildren(el("span", "saved-missing", `Not deleted: ${error.message}`));
+  }
+}
+
+async function loadSaved() {
+  try {
+    const response = await fetch("/saved", { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    savedJourneys = data.journeys || [];
+  } catch (error) {
+    savedJourneys = [];
+    $("#saved-empty").textContent = `Saved journeys could not be loaded (${error.message}).`;
+  }
+  savedAudio.pause();
+  activeSaved = null;
+  $("#saved-list").replaceChildren(...savedJourneys.map(savedRow));
+  updateSavedSummary();
+  renderSaveControl();
+  requestAnimationFrame(fitPanels);
+}
+
+// The result panel offers saving only for a verified journey that is not saved yet.
+function renderSaveControl() {
+  const status = $("#save-status");
+  const open = $("#save-open");
+  const fields = $("#save-fields");
+  const journey = displayedJourney;
+  const saved = journey && savedJourneys.find((item) => item.origin === journey.filename);
+  fields.hidden = true;
+  open.hidden = !journey || Boolean(saved);
+  status.textContent = saved ? `Saved as “${saved.title}”` : "";
+}
+
+$("#save-open").addEventListener("click", () => {
+  $("#save-title").value = displayedJourney ? journeyTitle(displayedJourney) : "";
+  $("#save-open").hidden = true;
+  $("#save-fields").hidden = false;
+  $("#save-title").focus();
+});
+$("#save-cancel").addEventListener("click", renderSaveControl);
+$("#save-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!displayedJourney) return;
+  const status = $("#save-status");
+  status.textContent = "Saving…";
+  try {
+    const response = await fetch("/saved", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ journey: displayedJourney.filename, title: $("#save-title").value.trim() }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    await loadSaved();
+  } catch (error) {
+    status.textContent = `Not saved: ${error.message}`;
+  }
+});
+
+// ---------- Resizable panels ----------
+
+// The globe keeps at least this much height on wide screens (matches styles.css).
+const stageMin = () => (matchMedia("(max-height: 800px)").matches ? 170 : 220);
+const PANELS = {
+  journey: { variable: "--journey-height", fallback: 360, min: 200, element: () => $(".journey") },
+  activity: { variable: "--activity-height", fallback: 240, min: 110, element: () => $("#activity-body") },
+};
+
+function storedHeight(kind) {
+  try {
+    return Number(localStorage.getItem(`sonic-journey-${kind}-height`)) || null;
+  } catch {
+    return null;
+  }
+}
+
+function currentHeight(kind) {
+  const value = parseFloat(app.style.getPropertyValue(PANELS[kind].variable));
+  return value || storedHeight(kind) || PANELS[kind].fallback;
+}
+
+// Height of Agent activity apart from its scrolling body: summary, padding and borders.
+function activityChrome() {
+  const panel = getComputedStyle(activity);
+  const summary = activity.querySelector("summary");
+  const extras = ["paddingTop", "paddingBottom", "borderTopWidth", "borderBottomWidth"].reduce((sum, key) => sum + parseFloat(panel[key]), 0);
+  const gap = activity.open ? parseFloat(getComputedStyle(summary).marginBottom) : 0;
+  return summary.getBoundingClientRect().height + gap + extras;
+}
+
+// Intended heights, computed from settings rather than measured boxes,
+// because the grid may already have squeezed a panel that no longer fits.
+function intendedHeight(kind) {
+  if (kind === "activity") return activityChrome() + (activity.open ? currentHeight("activity") : 0);
+  return app.dataset.result === "ready" ? currentHeight("journey") : $(".journey").scrollHeight;
+}
+
+// Largest height that still leaves the globe and the other panel their space.
+function maxHeight(kind) {
+  if (matchMedia("(max-width: 1100px)").matches) return Math.round(innerHeight * 0.85);
+  const layout = $(".layout");
+  const gaps = parseFloat(getComputedStyle(layout).rowGap) * 3 || 42;
+  const free = layout.clientHeight - stageMin() - gaps - savedPanel.getBoundingClientRect().height;
+  if (kind === "journey") return Math.floor(free - intendedHeight("activity"));
+  return Math.floor(free - intendedHeight("journey") - activityChrome());
+}
+
+function setHeight(kind, height, save = false) {
+  const panel = PANELS[kind];
+  const max = Math.max(panel.min, maxHeight(kind));
+  const value = Math.round(Math.min(max, Math.max(panel.min, height)));
+  app.style.setProperty(panel.variable, `${value}px`);
+  const handle = document.querySelector(`.resize-handle[data-resize="${kind}"]`);
+  handle.setAttribute("aria-valuemin", String(panel.min));
+  handle.setAttribute("aria-valuemax", String(max));
+  handle.setAttribute("aria-valuenow", String(value));
+  if (save) {
+    try {
+      localStorage.setItem(`sonic-journey-${kind}-height`, String(value));
+    } catch {
+      // Without storage the size simply resets next visit.
+    }
+  }
+}
+
+// Shrink panels that no longer fit, e.g. after a window resize or opening Agent activity.
+function fitPanels() {
+  if (mode !== "workspace") return;
+  setHeight("activity", currentHeight("activity"));
+  setHeight("journey", currentHeight("journey"));
+}
+
+for (const handle of document.querySelectorAll(".resize-handle")) {
+  const kind = handle.dataset.resize;
+  handle.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault(); // No text selection while dragging.
+    const startY = event.clientY;
+    const start = PANELS[kind].element().getBoundingClientRect().height;
+    handle.setPointerCapture(event.pointerId); // Release outside the handle still ends the drag.
+    handle.classList.add("active");
+    document.body.classList.add("is-resizing");
+    const move = (moveEvent) => setHeight(kind, start + moveEvent.clientY - startY);
+    const end = () => {
+      handle.classList.remove("active");
+      document.body.classList.remove("is-resizing");
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("lostpointercapture", end);
+      setHeight(kind, currentHeight(kind), true);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("lostpointercapture", end);
+  });
+  handle.addEventListener("keydown", (event) => {
+    const steps = { ArrowUp: -24, ArrowDown: 24, PageUp: -96, PageDown: 96 };
+    let target = null;
+    if (event.key in steps) target = currentHeight(kind) + steps[event.key];
+    else if (event.key === "Home") target = PANELS[kind].min;
+    else if (event.key === "End") target = Infinity;
+    if (target === null) return;
+    event.preventDefault();
+    setHeight(kind, target, true);
+  });
+  handle.addEventListener("dblclick", () => setHeight(kind, PANELS[kind].fallback, true));
+}
+
+window.addEventListener("resize", fitPanels);
+activity.addEventListener("toggle", () => requestAnimationFrame(fitPanels));
+savedPanel.addEventListener("toggle", () => requestAnimationFrame(fitPanels));
 
 // ---------- Polling and sending ----------
 
@@ -1269,5 +1766,6 @@ input.addEventListener("keydown", (event) => {
 renderChat([]);
 renderActivity();
 loadRecordings();
+loadSaved();
 refresh();
 setInterval(refresh, 1000);

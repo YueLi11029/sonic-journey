@@ -20,9 +20,9 @@
       <h1>Sonic Journey</h1>
     </div>
     <div class="topbar-actions">
-      <button type="button" class="ghost-button" id="explore-button">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>
-        Explore the globe
+      <button type="button" class="ghost-button" id="home-button" aria-label="Home: return to the globe">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11.5 12 4l9 7.5M5.5 9.8V20h4.8v-5.5h3.4V20h4.8V9.8"/></svg>
+        Home
       </button>
       <div class="status" id="connection" data-state="connecting" role="status"
            title="Shows whether this page can reach the Sonic Journey server.">
@@ -63,16 +63,22 @@
       </button>
     </section>
 
-    <section class="panel journey" aria-labelledby="journey-title">
-      <div class="panel-head">
-        <div>
-          <p class="eyebrow">Your result</p>
-          <h2 id="journey-title">Finished journey</h2>
+    <section class="panel journey" aria-labelledby="journey-title" aria-live="polite">
+      <div class="panel-head result-head">
+        <div class="result-heading">
+          <p class="eyebrow">Your result <span class="result-badge" id="result-badge" hidden></span></p>
+          <h2 id="journey-title">No journey yet</h2>
         </div>
         <span id="journey-meta" class="muted small"></span>
       </div>
       <div id="journey-empty" class="empty">
-        <p class="muted small">No journey yet. The player appears here once the server has mixed and verified the audio.</p>
+        <p class="muted small">Ask for a journey in the chat. Its timeline and player appear here once the server has mixed and verified the audio.</p>
+      </div>
+      <div id="journey-plan" class="plan" hidden>
+        <p class="plan-note" id="plan-note"></p>
+        <ol class="plan-list" id="plan-list"></ol>
+        <p class="plan-settings" id="plan-settings"></p>
+        <button type="button" class="text-button" id="show-previous" hidden>Show the previous verified journey</button>
       </div>
       <p id="journey-alert" class="inline-alert" role="alert" hidden></p>
       <div id="journey-body" hidden>
@@ -82,31 +88,59 @@
             <svg class="icon-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg>
           </button>
           <div class="track">
-            <div id="timeline" class="timeline" aria-hidden="true"></div>
             <div id="journey-wave"></div>
             <input type="range" id="seek" min="0" max="1" step="0.1" value="0" aria-label="Playback position" hidden>
             <div class="times"><span id="time-current">0:00</span><span id="time-total">0:00</span></div>
           </div>
         </div>
         <audio id="journey-audio" preload="metadata"></audio>
+        <div class="scenes" id="scene-timeline" role="group" aria-label="Journey timeline: select a scene to jump to it"></div>
         <ol id="source-list" class="source-list"></ol>
         <ul id="transition-list" class="transition-list"></ul>
         <ul id="journey-notes" class="notes"></ul>
-        <button type="button" id="revise-button" class="text-button revise">Request a revised version in the chat</button>
+        <div class="result-actions">
+          <button type="button" id="revise-button" class="text-button revise">Request a revised version in the chat</button>
+          <form class="save-form" id="save-form">
+            <span class="muted small" id="save-status" role="status"></span>
+            <button type="button" class="text-button" id="save-open">Save this journey</button>
+            <span class="save-fields" id="save-fields" hidden>
+              <label for="save-title" class="visually-hidden">Title for the saved journey</label>
+              <input id="save-title" maxlength="80" required>
+              <button class="text-button" id="save-confirm">Save</button>
+              <button type="button" class="text-button muted" id="save-cancel">Cancel</button>
+            </span>
+          </form>
+        </div>
       </div>
+      <div class="resize-handle" data-resize="journey" role="separator" aria-orientation="horizontal" tabindex="0"
+           aria-label="Resize the result panel. Drag, or use the arrow keys; double-click to reset."></div>
     </section>
+
+    <details class="panel saved" id="saved-panel" open>
+      <summary class="panel-head">
+        <h2 id="saved-title">Saved journeys</h2>
+        <span class="muted small" id="saved-count"></span>
+      </summary>
+      <ul class="saved-list" id="saved-list"></ul>
+      <p class="muted tiny" id="saved-empty" hidden>No saved journeys yet. Use “Save this journey” on a result.</p>
+      <audio id="saved-audio" preload="none"></audio>
+    </details>
 
     <details class="panel activity" id="activity">
       <summary class="panel-head">
         <h2 id="activity-title">Agent activity</h2>
         <span id="activity-state" class="muted small">Idle</span>
       </summary>
-      <ol id="steps" class="steps"></ol>
-      <details class="tool-log">
-        <summary>Tool calls <span id="tool-count" class="muted"></span></summary>
-        <ol id="tool-log"></ol>
-      </details>
-      <p class="muted tiny">Built from the tool calls and results the server recorded for your latest request. The model's private reasoning is not shown.</p>
+      <div class="activity-body" id="activity-body">
+        <ol id="steps" class="steps"></ol>
+        <details class="tool-log">
+          <summary>Tool calls <span id="tool-count" class="muted"></span></summary>
+          <ol id="tool-log"></ol>
+        </details>
+        <p class="muted tiny">Built from the tool calls and results the server recorded for your latest request. The model's private reasoning is not shown.</p>
+      </div>
+      <div class="resize-handle" data-resize="activity" role="separator" aria-orientation="horizontal" tabindex="0"
+           aria-label="Resize the agent activity panel. Drag, or use the arrow keys; double-click to reset."></div>
     </details>
 
     <section class="panel conversation" aria-labelledby="chat-title">
