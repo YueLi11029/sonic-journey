@@ -1,0 +1,85 @@
+{
+  "_note": "Optional metadata for recordings in audio/, keyed by WAV filename. Titles, descriptions and tags are based only on the original filenames. Fill in source and license when the recordist or license is documented. Durations are read from the files, and map coordinates live in locations.json (exact) and ../cities/cities.json (city-level).",
+  "recordings": {
+    "Beijing_pinganWest_1.wav": {
+      "id": "beijing-pinganwest-1",
+      "title": "pinganWest, part 1",
+      "city": "Beijing",
+      "category": "transit",
+      "tags": ["transit", "station"],
+      "description": "Recording from Beijing, labelled “pinganWest” (part 1 of 2) in the original filename.",
+      "source": null,
+      "license": null
+    },
+    "Beijing_pinganWest_2.wav": {
+      "id": "beijing-pinganwest-2",
+      "title": "pinganWest, part 2",
+      "city": "Beijing",
+      "category": "transit",
+      "tags": ["transit", "station"],
+      "description": "Recording from Beijing, labelled “pinganWest” (part 2 of 2) in the original filename.",
+      "source": null,
+      "license": null
+    },
+    "Boston_Massachusetts Avenue Station.wav": {
+      "id": "boston-massachusetts-avenue",
+      "title": "Massachusetts Avenue Station",
+      "city": "Boston",
+      "category": "transit",
+      "tags": ["transit", "station"],
+      "description": "Recording at Massachusetts Avenue Station in Boston.",
+      "source": null,
+      "license": null
+    },
+    "London_Baker Street Station approaching.wav": {
+      "id": "london-baker-street-approaching",
+      "title": "Baker Street Station, train approaching",
+      "city": "London",
+      "category": "transit",
+      "tags": ["transit", "station", "train", "arrival"],
+      "description": "A train approaching at Baker Street Station in London.",
+      "source": null,
+      "license": null
+    },
+    "London_Wembley Park Station approaching.wav": {
+      "id": "london-wembley-park-approaching",
+      "title": "Wembley Park Station, train approaching",
+      "city": "London",
+      "category": "transit",
+      "tags": ["transit", "station", "train", "arrival"],
+      "description": "A train approaching at Wembley Park Station in London.",
+      "source": null,
+      "license": null
+    },
+    "NY-path- approaching.wav": {
+      "id": "new-york-path-approaching",
+      "title": "PATH, train approaching",
+      "city": "New York",
+      "category": "transit",
+      "tags": ["transit", "train", "arrival"],
+      "description": "A train approaching, recorded in New York. The filename labels it “path”, likely the PATH rail system.",
+      "source": null,
+      "license": null
+    },
+    "NY-path- leaving.wav": {
+      "id": "new-york-path-leaving",
+      "title": "PATH, train leaving",
+      "city": "New York",
+      "category": "transit",
+      "tags": ["transit", "train", "departure"],
+      "description": "A train leaving, recorded in New York. The filename labels it “path”, likely the PATH rail system.",
+      "source": null,
+      "license": null
+    },
+    "shanghai.wav": {
+      "id": "shanghai-transit",
+      "title": "Shanghai recording",
+      "city": "Shanghai",
+      "category": "transit",
+      "tags": ["transit"],
+      "description": "Recording from Shanghai. The original filename gives no station or stage.",
+      "source": null,
+      "license": null
+    }
+  }
+}

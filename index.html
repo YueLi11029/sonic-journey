@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Sonic Journey</title>
+<link rel="stylesheet" href="/styles.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Ccircle cx=%2716%27 cy=%2716%27 r=%2716%27 fill=%27%23020305%27/%3E%3Ccircle cx=%2716%27 cy=%2716%27 r=%274%27 fill=%27%23ffc04d%27/%3E%3Cpath d=%27M10 10a8.5 8.5 0 0 0 0 12M22 10a8.5 8.5 0 0 1 0 12%27 fill=%27none%27 stroke=%27%23ffc04d%27 stroke-width=%272%27 stroke-linecap=%27round%27/%3E%3C/svg%3E">
+</head>
+<body>
+<div class="app" id="app" data-mode="landing">
+  <header class="topbar">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+        <circle cx="16" cy="16" r="3.2"/>
+        <path d="M10.3 10.3a8 8 0 0 0 0 11.4M21.7 10.3a8 8 0 0 1 0 11.4"/>
+        <path d="M6.1 6.1a14 14 0 0 0 0 19.8M25.9 6.1a14 14 0 0 1 0 19.8"/>
+      </svg>
+      <h1>Sonic Journey</h1>
+    </div>
+    <div class="topbar-actions">
+      <button type="button" class="ghost-button" id="explore-button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>
+        Explore the globe
+      </button>
+      <div class="status" id="connection" data-state="connecting" role="status"
+           title="Shows whether this page can reach the Sonic Journey server.">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span id="connection-text">Connecting…</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="stage" aria-labelledby="stage-title">
+      <h2 id="stage-title" class="visually-hidden">Recording map</h2>
+      <div id="globe" class="globe" aria-label="Interactive globe. Drag to rotate, scroll or pinch to zoom. Select a glowing city to explore its recordings."></div>
+      <p id="globe-fallback" class="globe-fallback" hidden></p>
+
+      <div class="hero" id="hero">
+        <h2 class="hero-title">Sonic Journey</h2>
+        <p class="hero-subtitle">Listen to cities through their trains and stations, then let an AI agent compose real recordings into a journey of your own.</p>
+        <div class="hero-actions">
+          <button type="button" id="start-button" class="cta">
+            Start Your Journey
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h14M13 6l6 6-6 6"/></svg>
+          </button>
+          <button type="button" class="text-button" id="hero-browse" disabled>or explore the cities</button>
+        </div>
+        <form id="hero-form" class="hero-form">
+          <label for="hero-input" class="visually-hidden">Describe your journey</label>
+          <input id="hero-input" maxlength="4000" autocomplete="off" placeholder="Or describe a journey…">
+          <button class="icon-button" aria-label="Send and start">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h14M13 6l6 6-6 6"/></svg>
+          </button>
+        </form>
+      </div>
+
+      <button type="button" class="stage-browse" id="recordings-toggle" disabled>
+        <span class="legend-city" aria-hidden="true"></span>
+        <span id="map-summary">Loading cities…</span>
+      </button>
+    </section>
+
+    <section class="panel journey" aria-labelledby="journey-title">
+      <div class="panel-head">
+        <div>
+          <p class="eyebrow">Your result</p>
+          <h2 id="journey-title">Finished journey</h2>
+        </div>
+        <span id="journey-meta" class="muted small"></span>
+      </div>
+      <div id="journey-empty" class="empty">
+        <p class="muted small">No journey yet. The player appears here once the server has mixed and verified the audio.</p>
+      </div>
+      <p id="journey-alert" class="inline-alert" role="alert" hidden></p>
+      <div id="journey-body" hidden>
+        <div class="player">
+          <button type="button" id="play-toggle" class="play-button" aria-label="Play journey">
+            <svg class="icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l11-6.5z"/></svg>
+            <svg class="icon-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg>
+          </button>
+          <div class="track">
+            <div id="timeline" class="timeline" aria-hidden="true"></div>
+            <div id="journey-wave"></div>
+            <input type="range" id="seek" min="0" max="1" step="0.1" value="0" aria-label="Playback position" hidden>
+            <div class="times"><span id="time-current">0:00</span><span id="time-total">0:00</span></div>
+          </div>
+        </div>
+        <audio id="journey-audio" preload="metadata"></audio>
+        <ol id="source-list" class="source-list"></ol>
+        <ul id="transition-list" class="transition-list"></ul>
+        <ul id="journey-notes" class="notes"></ul>
+        <button type="button" id="revise-button" class="text-button revise">Request a revised version in the chat</button>
+      </div>
+    </section>
+
+    <details class="panel activity" id="activity">
+      <summary class="panel-head">
+        <h2 id="activity-title">Agent activity</h2>
+        <span id="activity-state" class="muted small">Idle</span>
+      </summary>
+      <ol id="steps" class="steps"></ol>
+      <details class="tool-log">
+        <summary>Tool calls <span id="tool-count" class="muted"></span></summary>
+        <ol id="tool-log"></ol>
+      </details>
+      <p class="muted tiny">Built from the tool calls and results the server recorded for your latest request. The model's private reasoning is not shown.</p>
+    </details>
+
+    <section class="panel conversation" aria-labelledby="chat-title">
+      <div class="panel-head">
+        <h2 id="chat-title">Create</h2>
+      </div>
+      <div id="chat" class="chat" aria-live="polite"></div>
+      <p id="chat-error" class="inline-alert" role="alert" hidden></p>
+      <div class="modes" id="modes">
+        <div class="mode-tabs" role="group" aria-label="Creation mode">
+          <button type="button" class="mode-tab" data-mode="city" aria-pressed="false">Explore a city</button>
+          <button type="button" class="mode-tab" data-mode="mood" aria-pressed="false">Mood</button>
+          <button type="button" class="mode-tab" data-mode="sequence" aria-pressed="false">Sound journey</button>
+          <button type="button" class="mode-tab" data-mode="custom" aria-pressed="false">Custom mix</button>
+        </div>
+        <div class="mode-options" id="mode-options" hidden></div>
+      </div>
+      <form id="chat-form" class="composer">
+        <label for="message-input" class="visually-hidden">Describe your journey</label>
+        <textarea id="message-input" rows="2" maxlength="4000" required
+          placeholder="Describe the journey you want…"></textarea>
+        <button id="send-button" class="send-button" disabled>
+          <span>Send</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h14M13 6l6 6-6 6"/></svg>
+        </button>
+      </form>
+    </section>
+  </main>
+</div>
+
+<div class="overlay" id="city-overlay" hidden>
+  <div class="overlay-backdrop" data-close></div>
+  <section class="overlay-card" role="dialog" aria-modal="true" aria-labelledby="overlay-title" id="overlay-card">
+    <button type="button" class="icon-button overlay-close" id="overlay-close" aria-label="Close and return to the globe">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+    </button>
+
+    <div class="overlay-view" id="view-city">
+      <figure class="city-photo" id="city-photo">
+        <img id="city-image" alt="" decoding="async">
+        <div class="city-photo-fallback" id="city-photo-fallback" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>
+          <span>No photo available</span>
+        </div>
+        <figcaption class="city-heading">
+          <p class="eyebrow" id="city-eyebrow">City-level marker</p>
+          <h2 id="overlay-title"></h2>
+          <p class="city-count" id="city-count"></p>
+        </figcaption>
+      </figure>
+      <div class="city-actions">
+        <button type="button" class="cta" id="browse-recordings">
+          Browse recordings
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h14M13 6l6 6-6 6"/></svg>
+        </button>
+        <p class="city-disclaimer" id="city-disclaimer"></p>
+      </div>
+      <p class="photo-credit" id="photo-credit"></p>
+    </div>
+
+    <div class="overlay-view" id="view-recordings" hidden>
+      <div class="gallery-head">
+        <button type="button" class="text-button" id="back-to-city">← <span id="back-label">City</span></button>
+        <div class="gallery-title-row">
+          <h2 id="gallery-heading"></h2>
+          <button type="button" class="cta cta-small" id="city-journey"></button>
+        </div>
+        <p class="muted small" id="gallery-note"></p>
+      </div>
+      <ul id="gallery" class="gallery"></ul>
+    </div>
+
+    <div class="overlay-view" id="view-library" hidden>
+      <div class="gallery-head">
+        <p class="eyebrow">Recording library</p>
+        <h2 id="library-heading"></h2>
+        <p class="muted small" id="library-note"></p>
+      </div>
+      <ul id="library" class="library"></ul>
+    </div>
+    <audio id="preview-audio" preload="none"></audio>
+  </section>
+</div>
+
+<template id="welcome-template">
+  <div class="welcome">
+    <p class="eyebrow">Welcome</p>
+    <h3>Compose a journey from real transit sound.</h3>
+    <p class="muted">Describe a place, a mood and a length, or pick a creation mode below. The agent picks recordings from this app's library and the server mixes them into a WAV you can play here.</p>
+    <div class="examples" role="group" aria-label="Example requests"></div>
+  </div>
+</template>
+
+<script src="/vendor/globe.gl.min.js"></script>
+<script src="/globe.js"></script>
+<script src="/waveform.js"></script>
+<script src="/chat.js"></script>
+</body>
+</html>

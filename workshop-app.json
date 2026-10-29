@@ -1,0 +1,29 @@
+{
+  "schemaVersion": "workshop.app.v1",
+  "slug": "sonic-journey",
+  "title": "Sonic Journey",
+  "description": "An AI agent that composes immersive subway sound journeys from real audio recordings.",
+  "runtime": {
+    "languages": ["python312"],
+    "profile": "standard",
+    "build": ["python3.12", "-m", "py_compile", "app.py", "audio_mixer.py", "audio_analysis.py"],
+    "start": ["python3.12", "app.py"],
+    "port": 8080,
+    "healthPath": "/healthz"
+  },
+  "instructions": "You are Sonic Journey, an AI sound journey composer. Help users create immersive journeys using real subway and transit recordings. Ask about the desired mood, location, and duration when needed. Explain your proposed sequence of sounds clearly. Never claim to have generated audio unless a tool has actually done so. You cannot listen to audio, but the app shows a player for every journey a tool returns.",
+  "inference": {
+    "mode": "fixed",
+    "models": ["deepseek/deepseek-v4.1-flash"],
+    "defaultProfile": "deepseek-auto",
+    "estimatedUsdPerVisit": {"low": 0, "high": 0.1},
+    "estimateBasis": "Illustrative; portal limits apply."
+  },
+  "network": {
+    "classServices": [],
+    "publicHttpsDomains": [],
+    "publicWeb": false
+  },
+  "storage": {"visitorMiB": 0, "schema": "chat.v1"},
+  "integrations": []
+}

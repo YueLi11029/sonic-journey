@@ -1,0 +1,75 @@
+{
+  "_note": "Representative city photographs and city-level map coordinates. They are not recording locations.",
+  "cities": {
+    "Beijing": {
+      "lat": 39.9067,
+      "lng": 116.3975,
+      "coordinates_source": "City-level coordinates from the English Wikipedia article \"Beijing\" (https://en.wikipedia.org/wiki/Beijing)",
+      "image": {
+        "file": "beijing.jpg",
+        "title": "Skyline of Beijing CBD with B-5906 approaching (20211016171955) (1)",
+        "author": "N509FZ",
+        "license": "CC BY 4.0",
+        "license_url": "https://creativecommons.org/licenses/by/4.0",
+        "source_url": "https://commons.wikimedia.org/wiki/File:Skyline_of_Beijing_CBD_with_B-5906_approaching_(20211016171955)_(1).jpg",
+        "modified": "Resized to 960 px wide by Wikimedia"
+      }
+    },
+    "Boston": {
+      "lat": 42.3603,
+      "lng": -71.0578,
+      "coordinates_source": "City-level coordinates from the English Wikipedia article \"Boston\" (https://en.wikipedia.org/wiki/Boston)",
+      "image": {
+        "file": "boston.jpg",
+        "title": "ISH WC Boston4",
+        "author": "Ian Howard",
+        "license": "CC BY 2.5",
+        "license_url": "https://creativecommons.org/licenses/by/2.5",
+        "source_url": "https://commons.wikimedia.org/wiki/File:ISH_WC_Boston4.jpg",
+        "modified": "Resized to 960 px wide by Wikimedia"
+      }
+    },
+    "London": {
+      "lat": 51.5072,
+      "lng": -0.1275,
+      "coordinates_source": "City-level coordinates from the English Wikipedia article \"London\" (https://en.wikipedia.org/wiki/London)",
+      "image": {
+        "file": "london.jpg",
+        "title": "London Skyline (125508655)",
+        "author": "Ilya Grigorik",
+        "license": "CC BY-SA 3.0",
+        "license_url": "https://creativecommons.org/licenses/by-sa/3.0",
+        "source_url": "https://commons.wikimedia.org/wiki/File:London_Skyline_(125508655).jpeg",
+        "modified": "Resized to 960 px wide by Wikimedia"
+      }
+    },
+    "New York": {
+      "lat": 40.7128,
+      "lng": -74.0061,
+      "coordinates_source": "City-level coordinates from the English Wikipedia article \"New York City\" (https://en.wikipedia.org/wiki/New_York_City)",
+      "image": {
+        "file": "new-york.jpg",
+        "title": "View of Empire State Building from Rockefeller Center New York City dllu (cropped)",
+        "author": "Dllu",
+        "license": "CC BY-SA 4.0",
+        "license_url": "https://creativecommons.org/licenses/by-sa/4.0",
+        "source_url": "https://commons.wikimedia.org/wiki/File:View_of_Empire_State_Building_from_Rockefeller_Center_New_York_City_dllu_(cropped).jpg",
+        "modified": "Resized to 960 px wide by Wikimedia"
+      }
+    },
+    "Shanghai": {
+      "lat": 31.2325,
+      "lng": 121.4692,
+      "coordinates_source": "City-level coordinates from the English Wikipedia article \"Shanghai\" (https://en.wikipedia.org/wiki/Shanghai)",
+      "image": {
+        "file": "shanghai.jpg",
+        "title": "Huangpu Park 20124-Shanghai (32208802494)",
+        "author": "xiquinhosilva",
+        "license": "CC BY 2.0",
+        "license_url": "https://creativecommons.org/licenses/by/2.0",
+        "source_url": "https://commons.wikimedia.org/wiki/File:Huangpu_Park_20124-Shanghai_(32208802494).jpg",
+        "modified": "Resized to 960 px wide by Wikimedia"
+      }
+    }
+  }
+}
